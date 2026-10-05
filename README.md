@@ -24,12 +24,19 @@ cmake --build build
 ./build/test_spsc     # SPSC queue tests (single thread and two threads)
 ```
 
-ThreadSanitizer build (separate folder, Homebrew clang):
+Run all the tests (arena, queue, the two-thread demo and the pipeline):
 ```
-cmake -S . -B build-tsan -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
-cmake --build build-tsan
-./build-tsan/pipeline
+ctest --test-dir build --output-on-failure
 ```
+
+ThreadSanitizer build, in its own folder, using the `tsan` preset (Homebrew clang, `-DENABLE_TSAN=ON`):
+```
+cmake --preset tsan
+cmake --build --preset tsan
+ctest --preset tsan
+```
+Any data race makes `ctest` fail and prints TSan's report. The same thing without presets:
+`cmake -S . -B build-tsan -G Ninja -DENABLE_TSAN=ON -DCMAKE_CXX_COMPILER=clang++`.
 
 ## Project layout
 | Path | Contents                                                   |
@@ -42,7 +49,8 @@ cmake --build build-tsan
 | `tests/` | Unit tests and demo programs (written using AI)            |
 | `logs/` | Saved terminal output from the ThreadSanitizer runs        |
 | `docs/` | Screenshots used in this README                            |
-| `CMakeLists.txt` | Build configuration                                        |
+| `CMakeLists.txt` | Build configuration, `ENABLE_TSAN` option and tests        |
+| `CMakePresets.json` | `default` and `tsan` build/test presets                    |
 
 ---
 
@@ -244,6 +252,14 @@ I set `kBatch = 64` and `kBatches = 20000` (the same number of messages) so the 
 
 I restored `kBatch = 4096`, `kBatches = 2000` and `release` afterwards.
 
+### TSan in the build
+So that this does not depend on typing the right flags by hand:
+- `CMakeLists.txt` has an `ENABLE_TSAN` option that adds `-fsanitize=thread -g` to every target and defaults to `RelWithDebInfo`.
+- `CMakePresets.json` has a `tsan` preset (own folder `build-tsan`, Homebrew `clang++`), so `cmake --preset tsan`, `cmake --build --preset tsan` and `ctest --preset tsan` is the whole workflow.
+- The two programs that run the lock-free code across threads (`spsc_demo` and `pipeline`) are registered as tests next to `test_arena` and `test_spsc`, so one `ctest` run exercises every threaded code path. TSan exits with status 66 when it reports a race, so a race fails the test, and `halt_on_error=1` stops at the first report.
+- **Clean code:** all 4 tests pass under TSan (about 8 seconds in total).
+- **Does the build catch the bug?** I put the `relaxed` store back with a batch of 64, in a scratch copy of the project, and ran `ctest --preset tsan`: `pipeline` failed with the data race at `pipeline.cpp:45` and the other three tests still passed.
+
 ---
 
 ## Failures and fixes
@@ -260,5 +276,5 @@ I restored `kBatch = 4096`, `kBatches = 2000` and `release` afterwards.
 ## What is still to do
 - Bonus: MPMC queue
 - Bonus: huge pages (needs Linux)
-- Bonus: a `tsan` target in the CMake build (right now the TSan folder is configured by hand)
+- (Bonus TSan in the build: done, see "TSan in the build")
 
