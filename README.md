@@ -270,11 +270,3 @@ So that this does not depend on typing the right flags by hand:
 | Baseline results were inconsistent (3.4 vs 9.0) | Not understood. Two performance modes. After padding, the same logic inside `isolation.cpp` was stable | Reported the median and range, and trust the isolation table (see Limitations) |
 | ThreadSanitizer programs crashed with a segmentation fault at startup | Apple clang's TSan does not work on this macOS (also crashes for a hello world, so not my code) | Built the TSan folder with Homebrew clang (`-DCMAKE_CXX_COMPILER=clang++`) |
 | `relaxed` store on `batches_done` was not detected by TSan or by the output | At batch 4096 and queue 1024 the queue's own synchronisation already orders the accesses | Repeated the experiment with a batch smaller than the queue (64), where TSan reports the race (see ThreadSanitizer) |
-
----
-
-## What is still to do
-- Bonus: MPMC queue
-- Bonus: huge pages (needs Linux)
-- (Bonus TSan in the build: done, see "TSan in the build")
-
