@@ -21,3 +21,8 @@ add_executable(spsc_demo tests/spsc_demo.cpp)
 target_include_directories(spsc_demo PRIVATE include)
 target_compile_options(spsc_demo PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(spsc_demo PRIVATE Threads::Threads)
+
+add_executable(pipeline bench/pipeline.cpp)
+target_include_directories(pipeline PRIVATE include)
+target_compile_options(pipeline PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(pipeline PRIVATE Threads::Threads)
