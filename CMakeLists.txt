@@ -36,3 +36,17 @@ add_executable(isolation bench/isolation.cpp)
 target_include_directories(isolation PRIVATE include)
 target_compile_options(isolation PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(isolation PRIVATE Threads::Threads)
+
+
+enable_testing()
+
+add_executable(test_arena tests/test_arena.cpp)
+target_include_directories(test_arena PRIVATE include)
+target_compile_options(test_arena PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME arena COMMAND test_arena)
+
+add_executable(test_spsc tests/test_spsc.cpp)
+target_include_directories(test_spsc PRIVATE include)
+target_compile_options(test_spsc PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(test_spsc PRIVATE Threads::Threads)
+add_test(NAME spsc COMMAND test_spsc)
