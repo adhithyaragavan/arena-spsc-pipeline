@@ -21,14 +21,16 @@ constexpr std::uint64_t kBatches    = 2000; // number of batches
 constexpr std::size_t   kQueueSize  = 1024;
 
 int main() {
-    Arena arena(kBatch*sizeof(Packet)+64);
-    SpscQueue<Packet*, kQueueSize> q;
-    std::atomic<std::uint64_t> batches_done{0};
+    // each shared variable on its own cache line, so the two threads don't
+    // fight over a line just because the variables sit next to each other
+    alignas(kCacheLine) Arena arena(kBatch*sizeof(Packet)+64);
+    alignas(kCacheLine) SpscQueue<Packet*, kQueueSize> q;
+    alignas(kCacheLine) std::atomic<std::uint64_t> batches_done{0};
 
-    std::uint64_t checksum = 0;
-    std::uint64_t bad = 0;
+    alignas(kCacheLine) std::uint64_t checksum = 0;
+    alignas(kCacheLine) std::uint64_t bad = 0;
 
-    auto start = std::chrono::high_resolution_clock::now();
+    auto start = std::chrono::steady_clock::now();
 
     std::thread producer([&] {
         for (std::uint64_t b = 0; b < kBatches; ++b) {
@@ -69,8 +71,8 @@ int main() {
     producer.join();
     consumer.join();
 
-    auto end = std::chrono::high_resolution_clock::now();
-    double secs = std::chrono::duration_cast<std::chrono::seconds>(end-start).count();
+    auto end = std::chrono::steady_clock::now();
+    double secs = std::chrono::duration<double>(end-start).count();
     double msgs = static_cast<double>(kBatch * kBatches);
 
     std::printf("messages:  %.0f\n", msgs);

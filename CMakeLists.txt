@@ -26,3 +26,13 @@ add_executable(pipeline bench/pipeline.cpp)
 target_include_directories(pipeline PRIVATE include)
 target_compile_options(pipeline PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(pipeline PRIVATE Threads::Threads)
+
+add_executable(baseline bench/baseline.cpp)
+target_include_directories(baseline PRIVATE include)
+target_compile_options(baseline PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(baseline PRIVATE Threads::Threads)
+
+add_executable(isolation bench/isolation.cpp)
+target_include_directories(isolation PRIVATE include)
+target_compile_options(isolation PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(isolation PRIVATE Threads::Threads)
