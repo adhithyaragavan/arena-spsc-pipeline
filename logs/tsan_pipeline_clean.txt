@@ -1,0 +1,5 @@
+messages:  8192000
+time:      4.785 s
+rate:      1.71 M msgs/s
+checksum:  33596207104000
+corrupted: 0

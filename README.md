@@ -2,11 +2,12 @@
 
 Systems SIG recruitment task: arena allocator, SPSC ring buffer, and an integrated low-latency pipeline in C++.
 
-**Status:** Phases 1, 2 and 3 are done (basic tests written by AI, nothing else). Still to do: proper tests, ThreadSanitizer, and the bonus tasks.
+**Status:** Phases 1, 2 and 3 are done, with tests (written with AI) and a ThreadSanitizer check. Still to do: the bonus tasks.
 
 ## Environment
 - macOS, Apple Silicon (arm64), 10 cores
-- Apple clang, C++20
+- Apple clang for the normal build, C++20
+- Homebrew clang 22 for the ThreadSanitizer build (Apple clang's TSan crashes on startup here, see Failures)
 - CMake with Ninja
 - Page size 16KB, cache line 128 bytes (checked it using `sysctl hw.pagesize hw.cachelinesize`)
 
@@ -19,6 +20,15 @@ cmake --build build
 ./build/pipeline      # arena + SPSC pipeline
 ./build/baseline      # malloc + mutex queue
 ./build/isolation     # all four allocator/queue combinations
+./build/test_arena    # arena unit tests
+./build/test_spsc     # SPSC queue tests (single thread and two threads)
+```
+
+ThreadSanitizer build (separate folder, Homebrew clang):
+```
+cmake -S . -B build-tsan -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
+cmake --build build-tsan
+./build-tsan/pipeline
 ```
 
 ## Project layout
@@ -29,7 +39,9 @@ cmake --build build
 | `bench/pipeline.cpp` | Phase 3: arena + SPSC pipeline                             |
 | `bench/baseline.cpp` | Phase 3: malloc + mutex queue baseline                     |
 | `bench/isolation.cpp` | Phase 3: all four combinations in one program              |
-| `tests/` | Test and demo programs (written using AI)                  |
+| `tests/` | Unit tests and demo programs (written using AI)            |
+| `logs/` | Saved terminal output from the ThreadSanitizer runs        |
+| `docs/` | Screenshots used in this README                            |
 | `CMakeLists.txt` | Build configuration                                        |
 
 ---
@@ -116,6 +128,8 @@ Release/acquire means all the consumer's reads happen before the producer's new 
 
 The arena is only touched by the producer, so its offset needs no atomic.
 
+With my settings (queue of 1024, batch of 4096) the queue by itself already stops the producer from getting more than 1024 packets ahead, so it cannot overwrite a packet before the consumer has moved past it. The counter only becomes essential when a batch is smaller than the queue. I keep it anyway, so that correctness does not depend on how the batch size and queue size are chosen (see the ThreadSanitizer section).
+
 ### Baseline for comparison
 Same packet, same message count, same checksum work, same queue size limit (1024):
 - `malloc` for every packet, and `free` by the consumer after use
@@ -177,8 +191,58 @@ Time per message: 61 ns, 39 ns, 34 ns and 19 ns respectively.
 - Each packet involves the same fill and checksum work in all versions, so the numbers show the *difference* in allocation and queue cost on top of that. With lighter packets the ratios would be bigger.
 - **Unexplained:** `bench/baseline.cpp` still gives about 3.8 M msgs/s (3 runs after the padding change), while `malloc + mutex queue` inside `isolation.cpp` gives about 16. They should be the same logic. I have not found the reason. I trust the isolation table because all four rows use exactly the same code paths. Absolute numbers on this machine clearly depend on memory layout and thread placement.
 
-### A test that passed but should not be trusted
-I changed the `batches_done` store from `release` to `relaxed`. The output did not change (`corrupted: 0` every time). That does **not** make `relaxed` correct. The failure window is tiny: the producer's first writes after a reset go to the start of the arena, while the consumer's last reads are at the end of it, so corruption almost never shows up. Without the release/acquire pair there is no guarantee. I put the `release` back. ThreadSanitizer would be the right tool to catch this, and I have not run it yet.
+---
+
+## Tests
+
+`tests/test_arena.cpp` (10 tests) and `tests/test_spsc.cpp` (7 tests), written with AI.
+- **Arena:** alignment from 1 byte up to 1 MiB, blocks do not overlap, overflow (including `SIZE_MAX`) returns `nullptr` and leaves the state unchanged, exact fit works, bad alignment is rejected, `reset` reuses memory, zero-size allocation, fresh memory is zero.
+- **SPSC queue:** empty pop, FIFO order, full queue, wraparound, the cases that force the cached index to refresh, struct payloads, and a two-thread test of 2M items through a 64-slot queue.
+- The tests use their own `CHECK` macro instead of `assert`, because `assert` is removed in Release builds (`NDEBUG`) and the tests would silently check nothing.
+
+**Do the tests catch bugs?** I planted bugs in scratch copies of the headers to find out:
+- naive bounds check (`offset + padding + size > capacity`): caught
+- push never refreshing its cached head: caught
+- aligning only the offset instead of the address: **missed at first**, because `mmap` returns page-aligned memory, so every alignment up to the page size gave the right answer anyway. I added a test with alignments above the page size, and it now fails on that bug.
+
+The tests cannot detect wrong memory orders (for example `relaxed` instead of `release`), because ordinary runs cannot observe that. That is what the next section is for.
+
+---
+
+## ThreadSanitizer
+
+### Setup
+`-fsanitize=thread` with **Homebrew clang** (see the commands in "Build and run"). With Apple's clang every TSan program crashed at startup with a segmentation fault, even a one-line hello world, so I switched compilers.
+
+### The correct code is clean
+With the normal settings (batch 4096, queue 1024) and `release` on `batches_done`, TSan printed no warnings for:
+- `test_spsc` (`logs/tsan_test_spsc_clean.txt`)
+- `spsc_demo`, 10M items (`logs/tsan_spsc_demo_clean.txt`)
+- `pipeline`, 8.2M messages, `corrupted: 0` (`logs/tsan_pipeline_clean.txt`)
+
+### Breaking it on purpose, first attempt: nothing happened
+I changed the consumer's `batches_done.store` from `release` to `relaxed` and ran the pipeline with the normal settings. TSan printed nothing and `corrupted` stayed 0 (`logs/tsan_relaxed_large_batch_silent.txt`).
+
+My first explanation was that the failure window was tiny. That was wrong. The real reason is that with a queue of 1024 and a batch of 4096 the producer can never be more than 1024 packets ahead, and the queue's own release/acquire on `head_` already makes the consumer's reads happen before the producer overwrites the same packet. So at these settings the `relaxed` store is not a race. (This is my reasoning; the next experiment supports it.)
+
+### Second attempt: a batch smaller than the queue
+I set `kBatch = 64` and `kBatches = 20000` (the same number of messages) so the producer can run several batches ahead and the queue no longer protects the arena.
+
+**Before: `relaxed`.** TSan reports a data race between the producer writing a packet after the reset (`pipeline.cpp:45`, `p->id = ...`, and also `:50` for the payload) and the consumer's earlier read of the same address (`pipeline.cpp:61`):
+
+![TSan data race with relaxed](docs/tsan_relaxed_race.png)
+
+**After: `release`.** Same settings, only the store changed back. No warnings, `corrupted: 0` (`logs/tsan_release_small_batch_clean.txt`):
+
+![TSan clean with release](docs/tsan_release_clean.png)
+
+### What I take from this
+- The `release` store (paired with the producer's `acquire` load) is what makes `reset()` safe. Without it TSan finds a real data race as soon as the batch is smaller than the queue.
+- The counter keeps the pipeline correct whatever batch size and queue size are chosen, even though at my default settings the queue happens to cover for it.
+- A clean TSan run is evidence, not proof. The same `relaxed` bug was invisible to both the program output and to TSan at the default settings, and only showed up once the settings changed.
+- TSan only reports races that actually happen in that run.
+
+I restored `kBatch = 4096`, `kBatches = 2000` and `release` afterwards.
 
 ---
 
@@ -188,12 +252,13 @@ I changed the `batches_done` store from `release` to `relaxed`. The output did n
 |---|---|---|
 | The lock-free queue was slower than the mutex queue with the arena | Cache-line traffic on every message (queue reloaded the other counter each time) and false sharing between harness variables | Cached indices in the queue, and `alignas(kCacheLine)` on the shared variables (see Optimization) |
 | Baseline results were inconsistent (3.4 vs 9.0) | Not understood. Two performance modes. After padding, the same logic inside `isolation.cpp` was stable | Reported the median and range, and trust the isolation table (see Limitations) |
+| ThreadSanitizer programs crashed with a segmentation fault at startup | Apple clang's TSan does not work on this macOS (also crashes for a hello world, so not my code) | Built the TSan folder with Homebrew clang (`-DCMAKE_CXX_COMPILER=clang++`) |
+| `relaxed` store on `batches_done` was not detected by TSan or by the output | At batch 4096 and queue 1024 the queue's own synchronisation already orders the accesses | Repeated the experiment with a batch smaller than the queue (64), where TSan reports the race (see ThreadSanitizer) |
 
 ---
 
 ## What is still to do
-- Proper tests for the arena and the queue (so far only basic ones written with AI)
-- ThreadSanitizer run, including a deliberate `relaxed` bug to see it get caught
-- Bonus: MPMC queue, huge pages (needs Linux), TSan in the build
+- Bonus: MPMC queue
+- Bonus: huge pages (needs Linux)
+- Bonus: a `tsan` target in the CMake build (right now the TSan folder is configured by hand)
 
-wai
